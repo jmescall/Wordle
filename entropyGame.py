@@ -46,14 +46,24 @@ class EntropyWordleCompletion(BasicWordleCompletion):
             return 0.0
         return -P * log2(P)
     
+    def _getEntropy(self, wordle_option: WordleOption, possible_results: list[int]) -> tuple[WordleOption, float]:
+        ''' Given a `wordle_option` and a list of `possible_results` return the average information gained across the results '''
+        entropy = 0.0 
+        for result in possible_results:
+            if not isValidColoring(wordle_option.word, result):
+                continue
+            entropy += self._calcEntropy(wordle_option, result)
+        return (wordle_option, entropy)
+    
     def _getEntropiesForRemaining(self) -> list[tuple[WordleOption, float]]:
         entropies = []
+        possible_results = self._getPossibleColorings()
 
         if self.use_threads:
             with Pool() as pool:
-                entropies = pool.map(getEntropy, [(self, wo) for wo in self.remaining_options]) 
+                entropies = pool.map(getEntropyWrapper, [{"game": self, "option": wo, "results": possible_results} for wo in self.remaining_options]) 
         else:
-            entropies = [getEntropy((self, wo)) for wo in self.remaining_options]
+            entropies = [self._getEntropy(wo, possible_results) for wo in self.remaining_options]
         
         return entropies
 
@@ -93,16 +103,20 @@ def isValidColoring(word: str, coloring: list[int]) -> bool:
             yellows.add(char)
     return True
 
-def getEntropy(args: tuple['EntropyWordleCompletion', WordleOption]) -> tuple[WordleOption, float]:
-    '''Returns the average entropy for a given wordle guess during a given wordle game'''
-    current_game, wordle_option = args
 
-    possible_results = current_game._getPossibleColorings()
 
-    entropy = 0.0
-    for res in possible_results:
-        if not isValidColoring(wordle_option.word, res):
-            continue
-        entropy += current_game._calcEntropy(wordle_option, res)
+def getEntropyWrapper(kwargs: dict[str: any]) -> tuple[WordleOption, float]:
+    ''' Returns the average entropy for a given wordle guess during a given wordle game. Wrapper for `_getEntropy` of the `EntropyWordleCompletion` game
+    
+    :param kwargs: dictionary storing the current `EntropyWordleCompletion` object in "game", `WordleOption` in "option", and a list of the possible `LetterResultOptions` enum values in "results"
+    '''
+    
+    current_game = kwargs.get("game")
+    wordle_option = kwargs.get("option")
+    possible_results = kwargs.get("results")
 
-    return (wordle_option, entropy)
+    # safety
+    if current_game is None or wordle_option is None or possible_results is None:
+        return (WordleOption('aaaaa'), 0.0)
+    
+    return current_game._getEntropy(wordle_option, possible_results)
