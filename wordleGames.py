@@ -1,4 +1,4 @@
-from collections import Counter
+from collections import Counter, defaultdict
 import fileAccess
 from multiprocessing import Pool
 
@@ -38,61 +38,61 @@ class GuessResult:
 
 class WordleGame:
     '''The base wordle game which will naively guess what could be a valid solution and a user must enter the colors resulting from each guess.'''
-
-    guessed_letters = list[str | None]
-    '''List we build with the correct letters based on the current game'''
-    
-    wrong_placed_letters = list[set[str]]
-    '''Sets of letters which are in the word, but not valid for a given place in the solution'''
-    
-    remaining_options = set[WordleOption] 
-    '''Set of wordle options which could be the solution to the current game'''
     
     guess_results: list[GuessResult] 
     '''List of guesses and their results'''
+    
+    remaining_options = set[WordleOption] 
+    '''Set of wordle options which could be the solution to the current game'''
 
-    bad_letters = set[str]
-    '''Set of letters which do not appear in the wordle solution at all'''
+    remaining_map = list[dict[str: WordleOption]]
+    ''' A list of the remaining options by character placement '''
 
-    def __init__(self) -> None:
+    def __init__(self, file_name: str = "WordleWords.txt") -> None:
         # Set up the trackers
-        self.guessed_letters = [None for _ in range(5)]
-        self.wrong_placed_letters = [set() for _ in range(5)]
         self.guess_results = []
-        self.bad_letters = set()
 
         # Store all of the possible words to guess
-        if not self._storeOptions():
+        if not self._storeOptions(file_name):
             return
 
         return
 
-    def _storeOptions(self) -> bool:
-        ''' Iterate through the valid wordle guesses file and store each word in `self.remaining_options` '''
+    def _storeOptions(self, file_name: str) -> bool:
+        ''' Iterate through the valid wordle guesses file and store each word in `self.remaining_options` and `self.remaining_map` '''
         self.remaining_options = set()
+        self.remaining_map = [defaultdict(set) for _ in range(5)]
+
 
         try: # read from the current directory of the file
-            file = open(fileAccess.sameDirFilePath("WordleWords.txt"), "r") 
+            file = open(fileAccess.sameDirFilePath(file_name), "r") 
         except:
             print("No options to guess from. Quiting...")
             return False
 
-        for word in file:
-            option = word.strip("\n")
-            self.remaining_options.add(WordleOption(option))
+        for line in file:
+            word = line.strip("\n")
+            option = WordleOption(word)
+            self.remaining_options.add(option)
+            for i, char in enumerate(word):
+                self.remaining_map[i][char].add(option)
         
         return True
-
-    def filterOptions(self, guessed_counts: dict[str, int], result_counts: dict[str]) -> None:
-        ''' Filters the current game's `remaining_options` based off the last guess and its results.
-        :param guessed_counts: Frequencies of letters in the last guess
-        :param result_counts: Frequencies of letters in the solution based off the last guess
-        '''
     
-        for option in list(self.remaining_options):
-            if not WordleUtils._isValidOption(option, guessed_counts, result_counts, self.guessed_letters, self.wrong_placed_letters, self.bad_letters):
-                self.remaining_options.remove(option)
-        
+    def createMap(self) -> list[dict[str: set[WordleOption]]]:
+        ''' Returns a new `remaining_map` based on `self.remaining_options` '''
+        remaining_map = [defaultdict(set) for _ in range(5)]
+        for option in self.remaining_options:
+            word = option.word
+            for i, char in enumerate(word):
+                remaining_map[i][char].add(option)
+        return remaining_map
+    
+    def _updateOptions(self) -> None:
+        ''' Filters the game's remaining possible solutions based on the last guess's result'''
+        guess, result = self.guess_results[-1].guess, self.guess_results[-1].result
+        self.remaining_options = WordleUtils.filter(self.remaining_options, self.remaining_map, guess, result)
+        self.remaining_map = self.createMap() # update the map with the new remaining options
         return
 
     def playGame(self) -> None:
@@ -147,47 +147,63 @@ class WordleGame:
         
         return LetterResultOptions.Grey
 
-    def _updateOptions(self) -> None:
-        ''' Filters the game's remaining possible solutions based on the last guess's result'''
-
-        # store the counts of letters it could be and where letters are
-        word, res = self.guess_results[-1].guess.word, self.guess_results[-1].result
-        result_counts = WordleUtils.updateCountsHelper(word, res, self.guessed_letters, self.wrong_placed_letters, self.bad_letters)
-        
-        # pass in the counts of the letters for which we guessed
-        guessed_counts = self.guess_results[-1].guess.letters.copy()
-
-        self.filterOptions(guessed_counts, result_counts)
-        return
-
 class WordleUtils:
     '''Utilities which can be used for most wordle games'''
 
-    def updateCountsHelper(word: str, result: list[int], guessed_letters: list[str | None], wrong_placed_letters: list[set[str]], bad_letters: set[str]) -> dict[str: int]:
-        '''Returns a dictionary of the results of a given guess. Note that this also modifies `guessed_letters`, `wrong_placed_letters`, and `bad_letters` appropriately.'''
-        
-        result_counts = {}
-
-        for i, (char, color) in enumerate(zip(word, result)):
-            if color == LetterResultOptions.Green:
-                guessed_letters[i] = char 
-                result_counts[char] = result_counts.get(char, 0) + 1
-            elif color == LetterResultOptions.Yellow:
-                wrong_placed_letters[i].add(char)
-                result_counts[char] = result_counts.get(char, 0) + 1
-            else:
-                result_counts[char] = result_counts.get(char, 0)
-        
+    def filterOnCounts(valid_remaining: set[WordleOption], guessed_counts: dict[str: int], result_counts: dict[str: int]) -> None:
+        ''' Based on the counts of characters guessed and counts based on the colors remove options '''
+        remove_zeros = set()
         for char, count in result_counts.items():
             if count == 0:
-                bad_letters.add(char)
-
-        # update wrongly_placed_letters for cases where multiple of the same letter appear in the guess, but less than that appear in the solution
-        for i, (char, color) in enumerate(zip(word, result)):
-            if color == LetterResultOptions.Grey and result_counts[char] > 0:
-                wrong_placed_letters[i].add(char)
+                for i in range(5):
+                    remove_zeros.update(remove_zeros)
+        valid_remaining.difference_update(remove_zeros)
         
-        return result_counts
+        for option in list(valid_remaining):
+            for guessed_char in guessed_counts.keys():
+                # if our last guess had the same or more of a shared letter, but the result showed a different count, remove the option because this can't be the solution
+                if guessed_counts[guessed_char] >= option.letters.get(guessed_char, 0):
+                    if result_counts[guessed_char] != option.letters[guessed_char]:
+                        valid_remaining.remove(option)
+                        break 
+                # if our last guess had less (but more than zero) of a letter than this word, then the result should have the same count if this option is the solution
+                elif option.letters.get(guessed_char, 0) > 0:
+                    if result_counts[guessed_char] != guessed_counts[guessed_char]:
+                        valid_remaining.remove(option)
+                        break
+        
+        return
+
+    def filterOnColor(valid_remaining: set[WordleOption], remaining_map: list[dict[str: set[WordleOption]]], guess_word: str, result: list[int], result_counts: dict[str: int]) -> None:
+        ''' Iterate through the characters of the guess and tehe colors assigned to each character to update counts and remove previous options '''
+        invalid_remove = set()
+
+        for i, (char, color) in enumerate(zip(guess_word, result)):
+            if color == LetterResultOptions.Green:
+                valid_remaining.intersection_update(remaining_map[i][char])
+                result_counts[char] = result_counts.get(char, 0) + 1
+            elif color == LetterResultOptions.Yellow:
+                invalid_remove.update(remaining_map[i][char])
+                result_counts[char] = result_counts.get(char, 0) + 1
+            else:
+                invalid_remove.update(remaining_map[i][char])
+                result_counts[char] = result_counts.get(char, 0)
+        
+        valid_remaining.difference_update(invalid_remove)
+        return
+
+
+    def filter(remaining_options: set[WordleOption], remaining_map: list[dict[str: set[WordleOption]]], guess: WordleOption, result: list[int]) -> set[WordleOption]:
+        ''' Return a new set of options based on the guess and the result '''
+        valid_remaining = remaining_options.copy()
+        guessed_counts = guess.letters.copy()
+        result_counts = {}
+        
+        # Note that filterOncolor updates result_counts, and both filterOnColor and filterOnCounts update valid_remaining
+        WordleUtils.filterOnColor(valid_remaining, remaining_map, guess.word, result, result_counts)
+        WordleUtils.filterOnCounts(valid_remaining , guessed_counts, result_counts)
+
+        return valid_remaining
 
     def validateGuess(guess: WordleOption, solution: WordleOption) -> list[int]:
         ''' Takes a wordle option as a guess and a wordle option as a solution and returns a result array.
@@ -210,50 +226,7 @@ class WordleUtils:
                 sol_letters[guess.word[i]] -= 1
 
         return results
-    
-    def _isValidOption(
-        option: WordleOption,
-        guessed_counts: dict[str, int], 
-        result_counts: dict[str], 
-        guessed_letters: list[str | None],
-        wrong_placed_letters: list[set[str]],
-        bad_letters: set[str]) -> bool:
-        ''' Returns true if the given wordle option could be a valid solution for the current game
-        :param option: The wordle option to consider if it could be a valid solution
-        :param guessed_counts: Frequencies of letters in the last guess
-        :param result_counts: Frequencies of letters in the solution based off the last guess
-        :param guessed_letters: A list populated with letters (guessed in the correct positions) or None
-        :param wrong_placed_letters: A list of letters that exist in the solution, but not in the correct place
-        :param bad_letters: A set of letters which do not exist in the solution at all '''
-        
-        for i, option_char in enumerate(option.word):
-            # restrict the words to matching letters
-            if option_char in bad_letters:
-                return False
-            if guessed_letters[i] and guessed_letters[i] != option_char:
-                return False
-            if option_char in wrong_placed_letters[i]:
-                return False
-            
-            # remove words that have letter frequencies greater than that in the word
-            if guessed_counts.get(option_char, 0) >= option.letters[option_char]:
-                if result_counts[option_char] != option.letters[option_char]:
-                    return False
-            elif guessed_counts.get(option_char, 0) > 0:
-                if result_counts[option_char] != guessed_counts[option_char]:
-                    return False
-        
-        for char, count in result_counts.items():
-            if count > 0 and char not in option.letters:
-                return False
-            
-        # make sure the word contains the letters that were wrongly placed
-        for i in range(5):
-            for letter in wrong_placed_letters[i]:
-                if letter not in option.letters:
-                    return False
-        
-        return True
+
         
 class AutoNaiveWordle(WordleGame):
     '''Wordle game which can be simulated by entering the solution, narrated through the terminal.'''
@@ -286,9 +259,9 @@ class BasicWordleCompletion(WordleGame):
     solution: WordleOption
     '''The solution to the wordle game. Not considered when making guesses by the model'''
 
-    def __init__(self, solution: str) -> None:
+    def __init__(self, solution: str, file_name: str = "WordleWords.txt") -> None:
         self.solution = WordleOption(solution)
-        super().__init__()
+        super().__init__(file_name)
         return
     
     def playGame(self) -> None:

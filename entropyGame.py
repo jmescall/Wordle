@@ -13,9 +13,9 @@ class EntropyWordleCompletion(BasicWordleCompletion):
     use_threads: bool
     '''True if we should multithread for calculating the entropies. Defaults to `True` but is unnecessary for small dictionaries of words'''
 
-    def __init__(self, solution: str, multithread: bool = True) -> None:
+    def __init__(self, solution: str, multithread: bool = True, file_name: str = "WordleWords.txt") -> None:
         self.use_threads = multithread
-        super().__init__(solution)
+        super().__init__(solution, file_name)
         return
 
     def _getPossibleColorings(self) -> list[list[int]]:
@@ -26,7 +26,7 @@ class EntropyWordleCompletion(BasicWordleCompletion):
         for i in range(5):
             next_colors = []
             for color_combo in possible_results:
-                if self.guessed_letters[i]:
+                if len(self.remaining_map[i]) == 1:
                     next_colors.append(color_combo + [LetterResultOptions.Green])
                 else:
                     next_colors.append(color_combo + [LetterResultOptions.Green])
@@ -38,24 +38,13 @@ class EntropyWordleCompletion(BasicWordleCompletion):
         return possible_results
 
     def _calcEntropy(self, wordle_option: WordleOption, result: list[int]) -> float:
-        n = len(self.remaining_options)
+        ''' Given a `wordle_option` as a guess and the list of colors from that guess in `result`, calculate the information entropy we would gain '''
+        filtered_options = WordleUtils.filter(self.remaining_options, self.remaining_map, wordle_option, result)
+        P = len(filtered_options) / len(self.remaining_options)
         
-        gl = self.guessed_letters[:]
-        wpl = [self.wrong_placed_letters[i].copy() for i in range(5)]
-        bl = self.bad_letters.copy()
-
-        result_counts = WordleUtils.updateCountsHelper(wordle_option.word, result, gl, wpl, bl)
-        guess_counts = wordle_option.letters.copy()
-        
-        num_valid = 0
-        for option in self.remaining_options:
-            if WordleUtils._isValidOption(option, guess_counts, result_counts, gl, wpl, bl):
-                num_valid += 1
-        
-        p = num_valid / n
-        if p == 0:
+        if P == 0:
             return 0.0
-        return -p * log2(p)
+        return -P * log2(P)
     
     def _getEntropiesForRemaining(self) -> list[tuple[WordleOption, float]]:
         entropies = []
@@ -112,7 +101,8 @@ def getEntropy(args: tuple['EntropyWordleCompletion', WordleOption]) -> tuple[Wo
 
     entropy = 0.0
     for res in possible_results:
-        if isValidColoring(wordle_option.word, res):
-            entropy += current_game._calcEntropy(wordle_option, res)
+        if not isValidColoring(wordle_option.word, res):
+            continue
+        entropy += current_game._calcEntropy(wordle_option, res)
 
     return (wordle_option, entropy)
